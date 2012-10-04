@@ -1,16 +1,19 @@
-/*
- *
- * app_swift -- A Cepstral Swift TTS engine interface
+ /*
+ * Asterisk -- An open source telephony toolkit.
  *
  * Copyright (C) 2006 - 2010, Darren Sessions
  *
  * Darren Sessions <darrensessions@me.com>
  *
- * This program is free software, distributed under the 
- * terms of the GNU General Public License Version 2. See 
- * the LICENSE file at the top of the source tree for more
- * information.
+ * See http://www.asterisk.org for more information about
+ * the Asterisk project. Please do not directly contact
+ * any of the maintainers of this project for assistance;
+ * the project provides a web site, mailing lists and IRC
+ * channels for your use.
  *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2. See the LICENSE file
+ * at the top of the source tree.
  */
 
 /*!
@@ -23,29 +26,53 @@
  * it's default location (/opt/swift)
  */
 
+/*** MODULEINFO
+	<defaultenabled>no</defaultenabled>
+	<depend>swift</depend>
+ ***/
+
 #include "asterisk.h"
-ASTERISK_FILE_VERSION(__FILE__, "$Revision: 200000 $")
+ASTERISK_FILE_VERSION(__FILE__, "$Revision: 211586 $")
 
 #include <swift.h>
 
 #include <math.h>
 
+#include "asterisk/app.h"
 #include "asterisk/astobj.h"
 #include "asterisk/channel.h"
 #include "asterisk/module.h"
 #include "asterisk/pbx.h"
-#include "asterisk/app.h"
 #include "asterisk/file.h"
 
+/*** DOCUMENTATION
+	<application name="Swift" language="en_US">
+		<synopsis>
+			Speak text through Swift text-to-speech engine (without writing files)
+			and optionally listen for DTMF.
+		</synopsis>
+		<syntax>
+			<parameter name="'text'" required="true"/>
+			<parameter name="options">
+				<optionlist>
+					<option name="timeout">
+						<para>Timeout in milliseconds.</para>
+					</option>
+					<option name="digits">
+						<para>Maxiumum digits.</para>
+					</option>
+				</optionlist>
+			</parameter>
+		</syntax>
+		<description>
+		<para>This application streams tts audio from the Cepstral swift engine and
+		will alternatively read DTMF into the ${SWIFT_DTMF} variable if the timeout
+		and digits options are used.</para>
+		</description>
+	</application>
+ ***/
+
 static char *app = "Swift";
-
-static char *synopsis = "Speak text through the Cepstral Swift text-to-speech engine.";
-
-static char *descrip = 
-"This application streams tts audio from the Cepstral swift engine and\n"
-"will alternatively read DTMF into the ${SWIFT_DTMF} variable if the timeout\n"
-"and digits options are used.\n\n"
-" Syntax: Swift(text[|timeout in ms][|maximum digits])\n";
 
 const int framesize = 20;
 
@@ -224,7 +251,7 @@ static char *listen_for_dtmf(struct ast_channel *chan, int timeout, int max_digi
 	return strdup(dtmf_conversion);
 }
 
-static int app_exec(struct ast_channel *chan, void *data)
+static int app_exec(struct ast_channel *chan, const char *data)
 {
 	int res = 0, argc = 0, max_digits = 0, timeout = 0, alreadyran = 0, old_writeformat = 0;
 	int ms, len, availatend;
@@ -365,10 +392,10 @@ static int app_exec(struct ast_channel *chan, void *data)
 				}
 
 				myf.f.frametype = AST_FRAME_VOICE;
-				myf.f.subclass = AST_FORMAT_ULAW;
+				myf.f.subclass.codec = AST_FORMAT_ULAW;
 				myf.f.datalen = len;
 				myf.f.samples = len;
-				myf.f.data = myf.frdata;
+				myf.f.data.ptr = myf.frdata;
 				myf.f.mallocd = 0;
 				myf.f.offset = AST_FRIENDLY_OFFSET;
 				myf.f.src = __PRETTY_FUNCTION__;
@@ -388,8 +415,8 @@ static int app_exec(struct ast_channel *chan, void *data)
 				ASTOBJ_UNLOCK(ps);
 				next = ast_tvadd(next, ast_samp2tv(myf.f.samples, samplerate));
 			} else {
-				next = ast_tvadd(next, ast_samp2tv(framesize / 2, samplerate));
 				ast_log(LOG_DEBUG, "Whoops, writer starved for audio\n");
+				break;
 			}
 		} else {
 			ms = ast_waitfor(chan, ms);
@@ -409,27 +436,29 @@ static int app_exec(struct ast_channel *chan, void *data)
 					ASTOBJ_WRLOCK(ps);
 					ps->immediate_exit = 1;
 					ASTOBJ_UNLOCK(ps);
-				} else if (f->frametype == AST_FRAME_DTMF && timeout > 0 && max_digits > 0) {
-					char originDTMF = f->subclass;
-					alreadyran = 1;
-					res = 0;
-					ASTOBJ_WRLOCK(ps);
-					ps->immediate_exit = 1;
-					ASTOBJ_UNLOCK(ps);
+				} else {
+					if (f->frametype == AST_FRAME_DTMF && timeout > 0 && max_digits > 0) {
+						char originDTMF = f->subclass.integer;
+						alreadyran = 1;
+						res = 0;
+						ASTOBJ_WRLOCK(ps);
+						ps->immediate_exit = 1;
+						ASTOBJ_UNLOCK(ps);
 
-					if (max_digits > 1) {
-						rc = listen_for_dtmf(chan, timeout, max_digits - 1);
-					}
-					if (rc) {
-						sprintf(results, "%c%s", originDTMF, rc);
-					} else {
-						sprintf(results, "%c", originDTMF);
-					}
+						if (max_digits > 1) {
+							rc = listen_for_dtmf(chan, timeout, max_digits - 1);
+						}
+						if (rc) {
+							sprintf(results, "%c%s", originDTMF, rc);
+						} else {
+							sprintf(results, "%c", originDTMF);
+						}
 
-					ast_log(LOG_NOTICE, "DTMF = %s\n", results);
-					pbx_builtin_setvar_helper(chan, "SWIFT_DTMF", results);
+						ast_log(LOG_NOTICE, "DTMF = %s\n", results);
+						pbx_builtin_setvar_helper(chan, "SWIFT_DTMF", results);
+					}
+					ast_frfree(f);
 				}
-				ast_frfree(f);
 			}
 		}
 
@@ -456,7 +485,7 @@ static int app_exec(struct ast_channel *chan, void *data)
 		if (cfg_goto_exten) {
 			ast_log(LOG_NOTICE, "GoTo(%s|%s|%d) : ", chan->context, results, 1);
 
-			if (ast_exists_extension (chan, chan->context, results, 1, chan->cid.cid_num)) {
+			if (ast_exists_extension (chan, chan->context, results, 1, chan->caller.id.number.str)) {
 				ast_log(LOG_NOTICE, "OK\n");
 				ast_copy_string(chan->exten, results, sizeof(chan->exten) - 1);
 				chan->priority = 0;
@@ -504,6 +533,7 @@ static int load_module(void)
 {
 	int res = 0;
 	const char *val = NULL;
+	struct ast_flags config_flags = { CONFIG_FLAG_NOCACHE };
 	struct ast_config *cfg;
 
 	/* Set some defaults */
@@ -513,10 +543,10 @@ static int load_module(void)
 
 	ast_copy_string(cfg_voice, "Allison-8kHz", sizeof(cfg_voice));
 
-	res = ast_register_application(app, app_exec, synopsis, descrip) ?
+	res = ast_register_application_xml(app, app_exec) ?
 		AST_MODULE_LOAD_DECLINE : AST_MODULE_LOAD_SUCCESS;
 
-	cfg = ast_config_load(SWIFT_CONFIG_FILE);
+	cfg = ast_config_load(SWIFT_CONFIG_FILE, config_flags);
 
 	if (cfg) {
 		if ((val = ast_variable_retrieve(cfg, "general", "buffer_size"))) {
@@ -544,3 +574,5 @@ static int load_module(void)
 }
 
 AST_MODULE_INFO_STANDARD(ASTERISK_GPL_KEY, "Cepstral Swift TTS Application");
+
+
